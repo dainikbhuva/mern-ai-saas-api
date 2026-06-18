@@ -1,9 +1,18 @@
 import { Request, Response, NextFunction } from "express";
 import { generateWithGemini } from "../services/geminiService.js";
 import { generateWithOpenAI } from "../services/openaiService.js";
+import { buildContentPrompt, ContentType } from "../services/contentPrompts.js";
+import { callAI, getUserWithQuota, saveGeneration } from "../utils/aiHelpers.js";
 import Generation from "../models/Generation.js";
 import User from "../models/User.js";
 import { AuthRequest } from "../middleware/authMiddleware.js";
+
+const CONTENT_TYPES: ContentType[] = [
+  "blog",
+  "social_media",
+  "product_description",
+  "seo",
+];
 
 export const generateGoogleAdsCopy = async (
   req: AuthRequest,
@@ -59,26 +68,31 @@ export const generateGoogleAdsCopy = async (
       });
     }
 
-    const prompt = `Generate 3 variations of responsive search ads (Google Ads format) for the following:
-                    Product/Service: ${productDescription}
-                    Target Audience: ${targetAudience}
+    const prompt = `Generate Google Ads marketing content for the following:
+Product/Service: ${productDescription}
+Target Audience: ${targetAudience}
 
-                    Requirements:
-                    - Each ad should have 3 Headlines (max 30 characters each)
-                    - Each ad should have 2 Descriptions (max 90 characters each)
-                    - Make them compelling and keyword-optimized
-                    - Format as JSON with array of 3 ads
+Requirements:
+- Create 3 variations of responsive search ads (Google Ads RSA format)
+- Each ad must have exactly 3 Headlines (max 30 characters each)
+- Each ad must have exactly 2 Descriptions (max 90 characters each)
+- Include 8-12 relevant Google Ads keywords for this campaign
+- Include 2-3 short marketing tips for running this ad campaign
+- Make copy compelling, conversion-focused, and keyword-optimized
 
-                    Return only valid JSON in this format:
-                    {
-                      "ads": [
-                        {
-                          "variation": 1,
-                          "headlines": ["Headline 1", "Headline 2", "Headline 3"],
-                          "descriptions": ["Description 1", "Description 2"]
-                        }
-                      ]
-                    }`;
+Return ONLY valid JSON (no markdown, no code fences) in this exact format:
+{
+  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "marketingTips": ["tip 1", "tip 2"],
+  "ads": [
+    {
+      "variation": 1,
+      "headlines": ["Headline 1", "Headline 2", "Headline 3"],
+      "descriptions": ["Description 1", "Description 2"],
+      "keywords": ["ad-specific keyword 1", "ad-specific keyword 2"]
+    }
+  ]
+}`;
 
     let generatedContent: string;
     try {
@@ -121,6 +135,104 @@ export const generateGoogleAdsCopy = async (
   }
 };
 
+export const generateContent = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: { code: "NOT_AUTHENTICATED", message: "User not authenticated" },
+      });
+    }
+
+    const {
+      type,
+      topic,
+      tone,
+      keywords,
+      audience,
+      platform,
+      productName,
+      features,
+      provider = "gemini",
+    } = req.body;
+
+    if (!type || !CONTENT_TYPES.includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_TYPE",
+          message: `type must be one of: ${CONTENT_TYPES.join(", ")}`,
+        },
+      });
+    }
+
+    const resolvedTopic = topic || productName;
+    if (!resolvedTopic?.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_INPUT",
+          message: "topic (or productName) is required",
+        },
+      });
+    }
+
+    const user = await getUserWithQuota(userId, res);
+    if (!user) return;
+
+    const input = {
+      topic: resolvedTopic,
+      tone,
+      keywords,
+      audience,
+      platform,
+      productName,
+      features,
+      provider,
+    };
+
+    const prompt = buildContentPrompt(type as ContentType, input);
+
+    let generatedContent: string;
+    try {
+      generatedContent = await callAI(prompt, provider);
+    } catch (error: any) {
+      return res.status(503).json({
+        success: false,
+        error: {
+          code: "AI_SERVICE_ERROR",
+          message: error.message || "AI service error",
+        },
+      });
+    }
+
+    const generation = await saveGeneration(user, {
+      userId,
+      type,
+      input,
+      output: generatedContent,
+      provider,
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        id: generation._id.toString(),
+        type,
+        output: generatedContent,
+        remainingQuota: user.monthlyQuota - user.usedThisMonth,
+      },
+    });
+  } catch (err) {
+    return next(err);
+  }
+};
+
 export const getGenerationHistory = async (
   req: AuthRequest,
   res: Response,
@@ -152,6 +264,7 @@ export const getGenerationHistory = async (
           id: g._id.toString(),
           type: g.type,
           provider: g.provider,
+          input: g.input,
           output: g.output,
           createdAt: g.createdAt,
         })),

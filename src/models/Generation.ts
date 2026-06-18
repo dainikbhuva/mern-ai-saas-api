@@ -2,7 +2,7 @@ import mongoose, { Document, Schema } from 'mongoose'
 
 export interface IGeneration extends Document {
   userId: mongoose.Types.ObjectId
-  type: 'seo' | 'ads' | 'social_media' | 'design_brief'
+  type: 'seo' | 'ads' | 'social_media' | 'design_brief' | 'blog' | 'product_description'
   input: Record<string, any>
   output: string
   provider: 'gemini' | 'openai'
@@ -15,7 +15,7 @@ const generationSchema = new Schema<IGeneration>(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     type: {
       type: String,
-      enum: ['seo', 'ads', 'social_media', 'design_brief'],
+      enum: ['seo', 'ads', 'social_media', 'design_brief', 'blog', 'product_description'],
       required: true,
     },
     input: { type: Schema.Types.Mixed, required: true },

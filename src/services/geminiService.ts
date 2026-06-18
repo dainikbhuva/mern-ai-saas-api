@@ -5,6 +5,10 @@ const ai = new GoogleGenAI({
 });
 
 export async function generateWithGemini(prompt: string): Promise<string> {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not set");
+  }
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
